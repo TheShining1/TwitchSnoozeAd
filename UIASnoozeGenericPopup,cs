@@ -1,0 +1,195 @@
+using System;
+using System.Windows.Automation;
+using System.Collections.Generic;
+using System.Diagnostics;
+using Streamer.bot.Plugin.Interface;
+
+public class TWCondition
+{
+	public AutomationProperty property;
+	public object value;
+
+	public static IInlineInvokeProxy CPH;
+	public static Condition CreateCondition(TWCondition[] conditions)
+	{
+		var UIAConditions = new Condition[conditions.Length];
+
+		int i = 0;
+		foreach (var condition in conditions)
+		{
+			var value = condition.value;
+			if (condition.value.GetType() == typeof(string))
+			{
+				UIAConditions[i] = new PropertyCondition(condition.property, condition.value, PropertyConditionFlags.IgnoreCase);
+			} else {
+				UIAConditions[i] = new PropertyCondition(condition.property, condition.value);
+			}
+			i++;
+		}
+		
+		if (UIAConditions.Length == 1) return UIAConditions[0];
+		return new AndCondition(UIAConditions);
+	}	
+}
+
+public class CPHInline
+{
+	Dictionary<string, string> browsers = new Dictionary<string, string>(){
+		{"firefox", "MozillaWindowClass"},
+		{"chrome", "Chrome_WidgetWin_1"}
+	};
+
+	public bool Execute()
+	{
+		if (!isArgumentsCorrect(args)) return false;
+		var targetBrowser = browsers[args["browser"].ToString().ToLower()];
+		var targetSection = args["section"].ToString().ToLower();
+		var targetButton = args["button"].ToString().ToLower();
+
+		TWCondition.CPH = CPH;		
+		
+		Stopwatch stopWatch = new Stopwatch();
+        stopWatch.Start();
+		CPH.LogDebug("Search started");
+		
+		ThreadProc(targetBrowser, targetSection, targetButton);
+		
+		stopWatch.Stop();
+		TimeSpan ts = stopWatch.Elapsed;
+		string elapsedTime = String.Format("{0:00}:{1:00}.{2:00}", ts.Minutes, ts.Seconds, ts.Milliseconds / 10);
+		CPH.LogDebug($"Search ended, it took {elapsedTime}");
+
+		return true;
+	}
+
+	bool isArgumentsCorrect(Dictionary<string, object> args)
+	{
+		if(!args.ContainsKey("browser")) {
+			CPH.LogInfo("Can't find browser argument");
+			return false;
+		}
+
+		var targetBrowser = args["browser"].ToString().ToLower();
+		if(targetBrowser.Length == 0 || !browsers.ContainsKey(targetBrowser))
+		{
+			CPH.LogInfo("Can't find browser in our database");
+			return false;		
+		}
+
+		if(!args.ContainsKey("section")) {
+			CPH.LogInfo("Can't find section argument");
+			return false;
+		}
+
+		if(!args.ContainsKey("button")) {
+			CPH.LogInfo("Can't find button argument");
+			return false;
+		}
+
+		return true;
+	}
+
+	void ThreadProc(string browserClass, string sectionName, string buttonText)
+	{
+		// Get desktop
+		var desktop = AutomationElement.RootElement;
+		if (desktop == null) {
+			CPH.LogDebug("Can't find desktop");
+			return;
+		}
+		CPH.LogDebug("Desktop found");
+
+		AutomationElementCollection browsers = getBrowsers(desktop, browserClass);
+		if (browsers.Count == 0) {
+			CPH.LogDebug($"Can't find browser {browserClass}");
+			return;
+		}		
+		CPH.LogDebug($"Browser {browserClass} found {browsers.Count}");
+
+		var i = 0;
+		foreach(AutomationElement browser in browsers)
+		{
+			CPH.LogDebug($"Searching in browser {i++}");
+			if (!isCorrectBrowser(browser, sectionName)) continue;
+			
+			AutomationElement button = getButton(browser, buttonText);
+			if (button == null) {
+				CPH.LogDebug($"Can't find {buttonText} button");
+				return;
+			}
+
+			invokeButton(button);
+			return;
+		}
+	}
+	
+	AutomationElementCollection getBrowsers(AutomationElement desktop, string browserClass)
+	{
+		// Get browser
+		TWCondition[] browserQuery = new TWCondition[]{
+			new TWCondition{
+				property = AutomationElement.ClassNameProperty,
+				value = browserClass,
+			}
+		};
+
+		var browserCondition = TWCondition.CreateCondition(browserQuery);
+		return desktop.FindAll(TreeScope.Children, browserCondition);
+	}
+	
+	bool isCorrectBrowser(AutomationElement browser, string sectionName)
+	{		
+		var title = browser.GetCurrentPropertyValue(AutomationElement.NameProperty) as string;
+		CPH.LogDebug($"Browser title: {title} / {sectionName}");
+		return title.ToLower().Contains(sectionName);
+	}
+	
+	AutomationElement getButton(AutomationElement browser, string buttonText)
+	{
+		// Get snooze button
+		TWCondition[] buttonsQuery = new TWCondition[]{
+			new TWCondition{
+				property = AutomationElement.ControlTypeProperty,
+				value = ControlType.Button
+			}
+		};
+
+		var buttonsCondition = TWCondition.CreateCondition(buttonsQuery);
+		var buttons = browser.FindAll(TreeScope.Descendants, buttonsCondition);
+		CPH.LogDebug($"Buttons found. Got {buttons.Count} buttons");
+
+		foreach(AutomationElement button in buttons)
+		{
+			try {
+				var name = button.GetCurrentPropertyValue(AutomationElement.NameProperty) as string;
+				CPH.LogDebug(name);
+				if(!name.ToLower().Contains(buttonText)) continue;
+				CPH.LogDebug($"{buttonText} button found");
+				return button;
+			}
+			catch (Exception e)
+			{
+				CPH.LogDebug(e.Message);
+				continue;
+			}
+		}
+		
+		return null;
+	}
+	
+	bool invokeButton(AutomationElement button)
+	{
+		InvokePattern pattern;
+		try {			
+			pattern = button.GetCurrentPattern(InvokePattern.Pattern) as InvokePattern;
+		}
+		catch (Exception e)
+		{
+			CPH.LogDebug(e.Message);
+			return false;
+		}
+		pattern.Invoke();
+		CPH.LogDebug("Invoked");
+		return true;
+	}
+}
